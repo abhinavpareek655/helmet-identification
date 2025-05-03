@@ -1,74 +1,67 @@
-#importing libraries
-import flask
+from flask import Flask, render_template, request, redirect, url_for
+import os
 import numpy as np
-from flask import Flask, render_template, request
-from flask import request, jsonify
-import requests
-from ultralytics import YOLO
-from PIL import Image
-import json
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+import tensorflow as tf
 
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-app=Flask(__name__)
-model = YOLO("yolov8n-oiv7.pt")
+# Load the trained model
+model = load_model('helmet_detection_model.h5')
 
-OPENROUTER_API_KEY = "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"
+# Model metrics (replace with your actual metrics)
+model_metrics = {
+    'accuracy': 95.2,
+    'precision': 94.8,
+    'recall': 93.7,
+    'f1_score': 94.2,
+    'training_samples': 5000,
+    'validation_samples': 1000,
+    'model_architecture': 'MobileNetV2',
+    'epochs': 20
+}
 
 @app.route('/')
 def index():
-    return flask.render_template("index.html")
-    #return "Hello World"
+    return render_template('index.html', 
+                          prediction_made=False, 
+                          **model_metrics)
 
-#prediction function
-@app.route('/result',methods = ['POST'])
-def result():
-    if request.method == 'POST':
-        result_arr = []
-        img = request.files["img"]
-        img = Image.open(img)
-        img.save("Image.jpg")
-        img = Image.open("Image.jpg")
-        results = model.predict(source="Image.jpg")
-        for result in results:
-            for box in result.boxes:
-                result_arr.append(model.names[box.cls[0].item()])
-        ans = []
-        for item in result_arr:
-            response = requests.post(
-					url="https://openrouter.ai/api/v1/chat/completions",
-					headers = {
-						"Authorization": f"Bearer {OPENROUTER_API_KEY}",
-						"Content-Type": "application/json"
-					},
-					data=json.dumps({
-						"model": "deepseek/deepseek-r1:free",
-						"messages": [
-						{
-							"role": "system",
-							"content": "You are an expert in recycling guidelines."
-						},
-						{
-							"role": "user",
-							"content": f"Provide material type, recyclable yes/no, instructions, environment impact for plastic in JSON format."
-						}
-						],
-					})
-					)
-            ans.append(response.json()["choices"][0]["message"]["content"])
-        result_text = ans
-        return jsonify({"result": ans})
+@app.route('/predict', methods=['POST'])
+def predict():
+    if 'image' not in request.files:
+        return redirect(url_for('index'))
+    
+    file = request.files['image']
+    if file.filename == '':
+        return redirect(url_for('index'))
+    
+    # Save the uploaded image
+    filename = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(filename)
+    
+    # Preprocess the image for prediction
+    img = image.load_img(filename, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    
+    # Make prediction
+    prediction = model.predict(img_array)
+    confidence = float(prediction[0][0]) * 100
+    wearing_helmet = bool(prediction[0][0] > 0.5)
+    
+    # Render template with prediction results
+    return render_template('index.html',
+                          prediction_made=True,
+                          image_path=filename,
+                          wearing_helmet=wearing_helmet,
+                          confidence=round(confidence, 2) if wearing_helmet else round(100-confidence, 2),
+                          **model_metrics)
 
-        try:
-            result_json = json.loads(result_text)
-        except Exception as e:
-            result_text_cleaned = result_text.strip().replace("json", "").replace("```", "").strip()
-            result_json = json.loads(result_text_cleaned)
-            result_json["item"] = item 
-
-            result_arr.append(result_json)
-        return jsonify({"result": result_text})
-		
-        
-        
-if __name__ == "__main__":
-	app.run(host='0.0.0.0')
+if __name__ == '__main__':
+    app.run(debug=True)
